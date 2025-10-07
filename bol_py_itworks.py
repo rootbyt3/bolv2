@@ -495,40 +495,50 @@ class PDFAddressReplacerGUI:
                 ship_from = page.search_for("SHIP FROM")
                 if not ship_from:
                     continue
-                    
-                region = fitz.Rect(0, ship_from[0].y0, page.rect.width / 2, ship_from[0].y0 + 200)
+
+                ship_from_rect = ship_from[0]
+                content_top = ship_from_rect.y1 + 0.5
+                region = fitz.Rect(0, content_top, page.rect.width / 2, content_top + 200)
                 text_dict = page.get_text("dict", clip=region)
-                
+
                 name_val = address_val = city_val = ""
-                
+
                 if "blocks" in text_dict:
                     for block in text_dict["blocks"]:
                         if "lines" in block:
                             for line in block["lines"]:
                                 if "spans" in line:
-                                    line_text = "".join(s.get("text", "") for s in line["spans"])
-                                    
-                                    if "Name:" in line_text:
-                                        name_val = line_text.split("Name:", 1)[1].strip() if "Name:" in line_text else ""
-                                    elif "Address:" in line_text:
-                                        address_val = line_text.split("Address:", 1)[1].strip() if "Address:" in line_text else ""
-                                    elif "City/State/Zip:" in line_text:
-                                        city_val = line_text.split("City/State/Zip:", 1)[1].strip() if "City/State/Zip:" in line_text else ""
-                
+                                    line_text = " ".join(
+                                        s.get("text", "").strip()
+                                        for s in line["spans"]
+                                    ).strip()
+
+                                    if not name_val:
+                                        name_val = _extract_field_value(line_text, "Name")
+                                    if not address_val:
+                                        address_val = _extract_field_value(line_text, "Address")
+                                    if not city_val:
+                                        city_val = _extract_field_value(line_text, "City/State/Zip")
+
                 # Fallback
                 for label, var_name in [("Name:", "name"), ("Address:", "address"), ("City/State/Zip:", "city")]:
                     if (var_name == "name" and not name_val) or (var_name == "address" and not address_val) or (var_name == "city" and not city_val):
                         lbl = page.search_for(label)
                         if lbl:
                             rect = lbl[0]
-                            val_region = fitz.Rect(rect.x1 + 5, rect.y0 - 2, region.x1, rect.y1 + 2)
-                            val = page.get_text("text", clip=val_region).strip()
+                            val_region = fitz.Rect(
+                                rect.x1 + 2,
+                                max(content_top, rect.y0 - 2),
+                                min(page.rect.width - 5, region.x1 + 100),
+                                rect.y1 + 3
+                            )
+                            val = page.get_text("text", clip=val_region).replace("\n", " ").strip()
                             if var_name == "name":
-                                name_val = val
+                                name_val = _extract_field_value(val, "Name") or val
                             elif var_name == "address":
-                                address_val = val
+                                address_val = _extract_field_value(val, "Address") or val
                             else:
-                                city_val = val
+                                city_val = _extract_field_value(val, "City/State/Zip") or val
                 
                 name_val = " ".join(name_val.split())
                 address_val = " ".join(address_val.split())
@@ -808,6 +818,19 @@ def _normalize_token(token: str) -> str:
     return re.sub(r"[^0-9A-Z]+", "", token.upper())
 
 
+def _extract_field_value(text: str, label: str) -> str:
+    """Extract the value that follows a label such as 'Name:' from text."""
+    if not text:
+        return ""
+
+    pattern = rf"{re.escape(label)}\s*:?\s*(.*)"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return ""
+
+    return match.group(1).strip()
+
+
 def _find_word_rects(page: fitz.Page, rect: fitz.Rect, tokens: Sequence[str]) -> List[fitz.Rect]:
     """Return bounding boxes for tokens intersecting rect in their original order."""
     if not tokens:
@@ -862,47 +885,63 @@ def process_pdf(args: Tuple) -> dict:
             ship_from = page.search_for("SHIP FROM")
             if not ship_from:
                 continue
-                
-            region = fitz.Rect(0, ship_from[0].y0, page.rect.width / 2, ship_from[0].y0 + 200)
+
+            ship_from_rect = ship_from[0]
+            content_top = ship_from_rect.y1 + 0.5
+            region = fitz.Rect(0, content_top, page.rect.width / 2, content_top + 200)
             
             for field_name, (old_text, new_text) in replacements.items():
                 if not new_text:
                     continue
-                
+
                 # CRITICAL: Spacing preservation for city/state/zip
                 formatted_new_text = new_text
+                city_old_parts: List[str] = []
+                city_new_parts: List[str] = []
                 if field_name == 'city':
                     # Always try to preserve spacing pattern, even if user typed single spaces
-                    old_parts = old_text.split()
-                    new_parts = new_text.split()
-                    
+                    city_old_parts = old_text.split()
+                    candidate_new_parts = new_text.split()
+
                     # Standard format: City State Zip (3 parts)
-                    if len(old_parts) >= 2 and len(new_parts) >= 2:
+                    if len(city_old_parts) >= 2 and len(candidate_new_parts) >= 2:
                         # Find actual spacing in original
-                        if len(old_parts) == 3 and len(new_parts) == 3:
+                        if len(city_old_parts) == 3 and len(candidate_new_parts) == 3:
                             # Full City State Zip
-                            city_pos = old_text.find(old_parts[0])
-                            city_end = city_pos + len(old_parts[0])
-                            state_pos = old_text.find(old_parts[1], city_end)
-                            state_end = state_pos + len(old_parts[1])
-                            zip_pos = old_text.find(old_parts[2], state_end)
-                            
+                            city_pos = old_text.find(city_old_parts[0])
+                            city_end = city_pos + len(city_old_parts[0])
+                            state_pos = old_text.find(city_old_parts[1], city_end)
+                            state_end = state_pos + len(city_old_parts[1])
+                            zip_pos = old_text.find(city_old_parts[2], state_end)
+
                             space1 = state_pos - city_end
                             space2 = zip_pos - state_end
-                            
+
                             # Apply original spacing to new text
-                            formatted_new_text = new_parts[0] + (' ' * space1) + new_parts[1] + (' ' * space2) + new_parts[2]
-                        elif len(old_parts) == 2 and len(new_parts) == 2:
+                            formatted_new_text = (
+                                candidate_new_parts[0]
+                                + (' ' * space1)
+                                + candidate_new_parts[1]
+                                + (' ' * space2)
+                                + candidate_new_parts[2]
+                            )
+                        elif len(city_old_parts) == 2 and len(candidate_new_parts) == 2:
                             # Just City State or State Zip
-                            part1_pos = old_text.find(old_parts[0])
-                            part1_end = part1_pos + len(old_parts[0])
-                            part2_pos = old_text.find(old_parts[1], part1_end)
-                            
+                            part1_pos = old_text.find(city_old_parts[0])
+                            part1_end = part1_pos + len(city_old_parts[0])
+                            part2_pos = old_text.find(city_old_parts[1], part1_end)
+
                             space_between = part2_pos - part1_end
-                            formatted_new_text = new_parts[0] + (' ' * space_between) + new_parts[1]
-                
+                            formatted_new_text = (
+                                candidate_new_parts[0]
+                                + (' ' * space_between)
+                                + candidate_new_parts[1]
+                            )
+
                 new_text = formatted_new_text
-                
+                if field_name == 'city':
+                    city_new_parts = new_text.split()
+
                 # Search
                 instances = page.search_for(old_text)
                 if not instances:
@@ -950,21 +989,32 @@ def process_pdf(args: Tuple) -> dict:
                     replacement_count += 1
 
                     if not dry_run:
+                        word_rects: List[fitz.Rect] = []
+                        if field_name == 'city' and city_old_parts:
+                            word_rects = _find_word_rects(page, rect, city_old_parts)
+
                         # Precise bounds
-                        cover = fitz.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
-                        page.draw_rect(cover, color=(1, 1, 1), fill=(1, 1, 1))
+                        # Keep the erasing rectangle from extending above the original text
+                        # to avoid overlapping the black "SHIP FROM" banner.
+                        cover = fitz.Rect(rect.x0 - 1, max(rect.y0, content_top), rect.x1 + 1, rect.y1 + 1)
+                        redaction = None
+                        try:
+                            redaction = page.add_redact_annot(cover, fill=(1, 1, 1))
+                            page.apply_redactions()
+                        except Exception:
+                            if redaction is not None:
+                                try:
+                                    page.delete_annot(redaction)
+                                except Exception:
+                                    pass
+                            page.draw_rect(cover, color=(1, 1, 1), fill=(1, 1, 1))
 
                         baseline = span_origin_y if span_origin_y is not None else rect.y0 + (rect.height * 0.8)
 
                         # CRITICAL FIX: For city/state/zip, insert each word separately to preserve spacing
                         if field_name == 'city':
-                            old_parts = old_text.split()
-                            new_parts = new_text.split()
-
-                            word_rects = _find_word_rects(page, rect, old_parts)
-
-                            if word_rects and len(word_rects) == len(new_parts):
-                                for new_part, word_rect in zip(new_parts, word_rects):
+                            if word_rects and city_new_parts and len(word_rects) == len(city_new_parts):
+                                for new_part, word_rect in zip(city_new_parts, word_rects):
                                     word_baseline = (
                                         span_origin_y
                                         if span_origin_y is not None
@@ -989,8 +1039,8 @@ def process_pdf(args: Tuple) -> dict:
                             try:
                                 page.insert_text(fitz.Point(rect.x0, baseline), new_text,
                                                fontname=font, fontsize=size, color=color)
-                            except:
-                                page.insert_text(fitz.Point(insert_x, baseline), new_text,
+                            except Exception:
+                                page.insert_text(fitz.Point(rect.x0, baseline), new_text,
                                                fontsize=size, color=(0, 0, 0))
         
         if not dry_run and replacement_count > 0:
