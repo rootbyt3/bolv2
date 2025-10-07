@@ -951,7 +951,9 @@ def process_pdf(args: Tuple) -> dict:
 
                     if not dry_run:
                         # Precise bounds
-                        cover = fitz.Rect(rect.x0 - 1, rect.y0 - 1, rect.x1 + 1, rect.y1 + 1)
+                        # Keep the erasing rectangle from extending above the original text
+                        # to avoid overlapping the black "SHIP FROM" banner.
+                        cover = fitz.Rect(rect.x0 - 1, rect.y0, rect.x1 + 1, rect.y1 + 1)
                         page.draw_rect(cover, color=(1, 1, 1), fill=(1, 1, 1))
 
                         baseline = span_origin_y if span_origin_y is not None else rect.y0 + (rect.height * 0.8)
