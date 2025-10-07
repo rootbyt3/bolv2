@@ -989,32 +989,23 @@ def process_pdf(args: Tuple) -> dict:
                     replacement_count += 1
 
                     if not dry_run:
-                        word_rects: List[fitz.Rect] = []
-                        if field_name == 'city' and city_old_parts:
-                            word_rects = _find_word_rects(page, rect, city_old_parts)
-
                         # Precise bounds
                         # Keep the erasing rectangle from extending above the original text
                         # to avoid overlapping the black "SHIP FROM" banner.
-                        cover = fitz.Rect(rect.x0 - 1, max(rect.y0, content_top), rect.x1 + 1, rect.y1 + 1)
-                        redaction = None
-                        try:
-                            redaction = page.add_redact_annot(cover, fill=(1, 1, 1))
-                            page.apply_redactions()
-                        except Exception:
-                            if redaction is not None:
-                                try:
-                                    page.delete_annot(redaction)
-                                except Exception:
-                                    pass
-                            page.draw_rect(cover, color=(1, 1, 1), fill=(1, 1, 1))
+                        cover = fitz.Rect(rect.x0 - 1, rect.y0, rect.x1 + 1, rect.y1 + 1)
+                        page.draw_rect(cover, color=(1, 1, 1), fill=(1, 1, 1))
 
                         baseline = span_origin_y if span_origin_y is not None else rect.y0 + (rect.height * 0.8)
 
                         # CRITICAL FIX: For city/state/zip, insert each word separately to preserve spacing
                         if field_name == 'city':
-                            if word_rects and city_new_parts and len(word_rects) == len(city_new_parts):
-                                for new_part, word_rect in zip(city_new_parts, word_rects):
+                            old_parts = old_text.split()
+                            new_parts = new_text.split()
+
+                            word_rects = _find_word_rects(page, rect, old_parts)
+
+                            if word_rects and len(word_rects) == len(new_parts):
+                                for new_part, word_rect in zip(new_parts, word_rects):
                                     word_baseline = (
                                         span_origin_y
                                         if span_origin_y is not None
